@@ -1,7 +1,7 @@
+rm -rf /tmp/HttpHeaderSocketServer
 docker rm -f HttpHeaderSocketServer
-docker run -it \
+docker run -dt \
   --name HttpHeaderSocketServer \
-  -p 8090:8090 \
   -v `pwd`/HttpHeaderSocketServer:/app \
   -w /app \
   python:3.12-slim \
