@@ -74,12 +74,38 @@ def handle_client(conn: socket.socket, addr) -> None:
         for line in lines_list:
             print(line)
         print()
-
+        
         src_ip = addr[0]
         src_port = addr[1]
         headers_str = "\r\n".join(lines_list)
 
-        body = f"src_ip: {src_ip}:{src_port}\nheaders: \nstart:------------------------------\n{headers_str}\nend:------------------------------\n".encode()
+        body = ""
+        if isinstance(conn, ssl.SSLSocket):
+            session = conn.session
+            body += "tls信息\n"
+            body += f"tls_version: {conn.version()}\n"
+            body += f"tls_cipher: {conn.cipher()}\n"
+            body += f"tls_alpn: {conn.selected_alpn_protocol()}\n"
+            body += f"tls_compression: {conn.compression()}\n"
+            body += f"tls_session_reused: {conn.session_reused}\n"
+            body += f"tls_session_id: {session.id.hex() if session else None}\n"
+            body += f"tls_session_has_ticket: {session.has_ticket if session else None}\n"
+            body += f"tls_session_ticket_lifetime_hint: {session.ticket_lifetime_hint if session else None}\n"
+            body += "\n\n"
+
+        body += f"src_ip: {src_ip}:{src_port}\n\n\n"
+        body += "解析的请求头: \n"
+        body += "start:------------------------------\n"
+        body += f"{headers_str}\n"
+        body += "end:------------------------------\n"
+        body += "\n\n"
+        
+        body += "原始报文: \n"
+        body += "start:------------------------------\n"
+        body += f"{raw.decode('utf-8')}\n"
+        body += "end:------------------------------\n"
+        body = body.encode()
+
         resp = (
             b"HTTP/1.1 200 OK\r\n"
             b"Content-Type: text/plain; charset=utf-8\r\n"
@@ -103,6 +129,8 @@ def handle_client(conn: socket.socket, addr) -> None:
 def main() -> None:
     ssl_ctx = make_ssl_context()
     scheme = "https" if ssl_ctx else "http"
+
+    ssl_ctx.set_alpn_protocols(["http/1.1","h2"])
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

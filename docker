@@ -7,3 +7,14 @@ docker run -dt \
   -w /app \
   python:3.12-slim \
   bash -c "apt-get update && apt-get install -y git && git clone https://github.com/hyl946/HttpHeaderServer.git HttpHeaderSocketServer && cd HttpHeaderSocketServer && python HttpHeaderSocketServer.py"
+
+
+
+  # 查看全部日志
+docker logs HttpHeaderSocketServer
+
+# 实时跟踪（类似 tail -f）
+docker logs -f HttpHeaderSocketServer
+
+# 只看最近 100 行
+docker logs --tail 100 HttpHeaderSocketServer
