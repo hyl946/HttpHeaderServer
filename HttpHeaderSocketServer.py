@@ -358,12 +358,12 @@ def handle_client(
             return
 
         request_line, headers, lines_list = parse_raw_headers(raw)
-        print(f"=== from {addr} ===")
-        print(f"request_line: {request_line}")
-        print("headers (raw order / raw casing):")
-        for line in lines_list:
-            print(line)
-        print()
+        # print(f"=== from {addr} ===")
+        # print(f"request_line: {request_line}")
+        # print("headers (raw order / raw casing):")
+        # for line in lines_list:
+        #     print(line)
+        # print()
 
         src_ip = addr[0]
         src_port = addr[1]
@@ -411,6 +411,8 @@ def handle_client(
         body += f"{raw.decode('utf-8')}\n"
         body += "end:------------------------------\n"
         body = body.encode()
+
+        print(body)
 
         resp = (
             b"HTTP/1.1 200 OK\r\n"
