@@ -408,7 +408,7 @@ def handle_client(
 
         body += "原始报文: \n"
         body += "start:------------------------------\n"
-        body += f"{raw.decode('utf-8')}\n"
+        body += f"{raw.decode('latin-1', errors='replace')}\n"
         body += "end:------------------------------\n"
         body = body.encode()
 
