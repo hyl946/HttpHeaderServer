@@ -412,7 +412,7 @@ def handle_client(
         body += "end:------------------------------\n"
         body = body.encode()
 
-        print(body)
+        print(body.decode('utf-8'))
 
         resp = (
             b"HTTP/1.1 200 OK\r\n"
