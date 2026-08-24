@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8090"))
+LISTEN_PORTS = (8090, 58888)  # 写死监听/抓 SYN 的端口
 # 设置证书后启用 HTTPS；不设置则仍为明文 HTTP
 TLS_CERT = os.environ.get("TLS_CERT", "")  # 例如 /path/to/fullchain.pem
 TLS_KEY = os.environ.get("TLS_KEY", "")    # 例如 /path/to/privkey.pem
@@ -149,7 +150,7 @@ def _parse_ip_tcp_syn_payload(ip: bytes, listen_port: int) -> SynInfo | None:
     # 只要客户端 SYN：SYN=1 ACK=0
     if (flags & 0x02) == 0 or (flags & 0x10) != 0:
         return None
-    if dst_port != listen_port:
+    if dst_port not in LISTEN_PORTS:
         return None
     if data_off < 20 or len(tcp) < data_off:
         return None
@@ -707,21 +708,27 @@ def main() -> None:
 
     syn_sniffer: SynSniffer | None = None
     if CAPTURE_SYN:
-        syn_sniffer = SynSniffer(PORT)
+        syn_sniffer = SynSniffer(LISTEN_PORTS[0])  # listen_port 参数已不再用于过滤
         if syn_sniffer.start():
-            print(f"SYN capture enabled on port {PORT} (AF_PACKET)")
+            print(f"SYN capture enabled on ports {LISTEN_PORTS} (AF_PACKET)")
         else:
             print(f"SYN capture disabled: {syn_sniffer.error}")
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind((HOST, PORT))
-        server.listen(32)
-        print(f"raw header socket server on {scheme}://{HOST}:{PORT}/")
-        if ssl_ctx:
-            print(f"TLS enabled: cert={TLS_CERT} key={TLS_KEY}")
+    servers: list[socket.socket] = []
+    for port in LISTEN_PORTS:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind((HOST, port))
+        srv.listen(32)
+        servers.append(srv)
+        print(f"raw header socket server on {scheme}://{HOST}:{port}/")
+    if ssl_ctx:
+        print(f"TLS enabled: cert={TLS_CERT} key={TLS_KEY}")
 
-        while True:
+    import select
+    while True:
+        readable, _, _ = select.select(servers, [], [])
+        for server in readable:
             conn, addr = server.accept()
             syn = syn_sniffer.pop(addr) if syn_sniffer and syn_sniffer.enabled else None
             hello: ClientHelloInfo | None = None
