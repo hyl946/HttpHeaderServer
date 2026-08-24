@@ -3,6 +3,8 @@ docker rm -f HttpHeaderSocketServer
 docker run -dt \
   --name HttpHeaderSocketServer \
   --network host \
+  --cap-add=NET_RAW \
+  --cap-add=NET_ADMIN \
   -v /tmp/HttpHeaderSocketServer:/app \
   -w /app \
   python:3.12-slim \

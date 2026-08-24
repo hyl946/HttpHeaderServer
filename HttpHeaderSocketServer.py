@@ -2,6 +2,10 @@ import hashlib
 import os
 import socket
 import ssl
+import struct
+import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 HOST = os.environ.get("HOST", "0.0.0.0")
@@ -9,6 +13,8 @@ PORT = int(os.environ.get("PORT", "8090"))
 # 设置证书后启用 HTTPS；不设置则仍为明文 HTTP
 TLS_CERT = os.environ.get("TLS_CERT", "")  # 例如 /path/to/fullchain.pem
 TLS_KEY = os.environ.get("TLS_KEY", "")    # 例如 /path/to/privkey.pem
+# 是否旁路抓 TCP SYN（Linux AF_PACKET，通常需要 root / CAP_NET_RAW）
+CAPTURE_SYN = os.environ.get("CAPTURE_SYN", "1") not in ("0", "false", "False")
 
 TLS_CERT = "tls/test.pem"
 TLS_KEY = "tls/test.key"
@@ -16,6 +22,38 @@ TLS_KEY = "tls/test.key"
 # TLS GREASE values (RFC 8701)
 _GREASE = {0x0A0A, 0x1A1A, 0x2A2A, 0x3A3A, 0x4A4A, 0x5A5A, 0x6A6A, 0x7A7A,
            0x8A8A, 0x9A9A, 0xAAAA, 0xBABA, 0xCACA, 0xDADA, 0xEAEA, 0xFAFA}
+
+_TCP_OPT_NAMES = {
+    0: "EOL",
+    1: "NOP",
+    2: "MSS",
+    3: "WS",
+    4: "SACK_PERM",
+    5: "SACK",
+    8: "TS",
+}
+
+
+@dataclass
+class SynInfo:
+    src_ip: str
+    src_port: int
+    dst_ip: str
+    dst_port: int
+    ttl: int
+    tos: int
+    ip_id: int
+    ip_flags_df: bool
+    window: int
+    seq: int
+    options: list[str] = field(default_factory=list)
+    option_kinds: list[int] = field(default_factory=list)
+    mss: int | None = None
+    wscale: int | None = None
+    sack_permitted: bool = False
+    tsval: int | None = None
+    tsecr: int | None = None
+    captured_at: float = 0.0
 
 
 @dataclass
@@ -34,6 +72,212 @@ class ClientHelloInfo:
     ja3: str = ""
     ja3_hash: str = ""
     raw_hex: str = ""
+
+
+def _parse_tcp_options(opt_bytes: bytes) -> tuple[list[str], list[int], dict]:
+    kinds: list[int] = []
+    pretty: list[str] = []
+    meta: dict = {
+        "mss": None,
+        "wscale": None,
+        "sack_permitted": False,
+        "tsval": None,
+        "tsecr": None,
+    }
+    i = 0
+    while i < len(opt_bytes):
+        kind = opt_bytes[i]
+        kinds.append(kind)
+        name = _TCP_OPT_NAMES.get(kind, f"UNK({kind})")
+        if kind == 0:  # EOL
+            pretty.append(name)
+            break
+        if kind == 1:  # NOP
+            pretty.append(name)
+            i += 1
+            continue
+        if i + 1 >= len(opt_bytes):
+            break
+        length = opt_bytes[i + 1]
+        if length < 2 or i + length > len(opt_bytes):
+            pretty.append(f"{name}?")
+            break
+        data = opt_bytes[i + 2 : i + length]
+        if kind == 2 and len(data) == 2:
+            meta["mss"] = int.from_bytes(data, "big")
+            pretty.append(f"MSS={meta['mss']}")
+        elif kind == 3 and len(data) == 1:
+            meta["wscale"] = data[0]
+            pretty.append(f"WS={meta['wscale']}")
+        elif kind == 4:
+            meta["sack_permitted"] = True
+            pretty.append("SACK_PERM")
+        elif kind == 8 and len(data) == 8:
+            meta["tsval"] = int.from_bytes(data[:4], "big")
+            meta["tsecr"] = int.from_bytes(data[4:], "big")
+            pretty.append(f"TS={meta['tsval']}/{meta['tsecr']}")
+        else:
+            pretty.append(f"{name}({data.hex()})" if data else name)
+        i += length
+    return pretty, kinds, meta
+
+
+def _parse_ip_tcp_syn_payload(ip: bytes, listen_port: int) -> SynInfo | None:
+    if len(ip) < 40:
+        return None
+    vihl = ip[0]
+    if (vihl >> 4) != 4:
+        return None
+    ihl = (vihl & 0x0F) * 4
+    if ihl < 20 or len(ip) < ihl + 20:
+        return None
+    if ip[9] != 6:  # TCP
+        return None
+
+    ttl = ip[8]
+    tos = ip[1]
+    ip_id = struct.unpack("!H", ip[4:6])[0]
+    flags_frag = struct.unpack("!H", ip[6:8])[0]
+    ip_flags_df = bool(flags_frag & 0x4000)
+    src_ip = socket.inet_ntoa(ip[12:16])
+    dst_ip = socket.inet_ntoa(ip[16:20])
+
+    tcp = ip[ihl:]
+    src_port, dst_port, seq, _ack, off_flags, window = struct.unpack("!HHIIHH", tcp[:16])
+    data_off = (off_flags >> 12) * 4
+    flags = off_flags & 0x1FF
+    # 只要客户端 SYN：SYN=1 ACK=0
+    if (flags & 0x02) == 0 or (flags & 0x10) != 0:
+        return None
+    if dst_port != listen_port:
+        return None
+    if data_off < 20 or len(tcp) < data_off:
+        return None
+
+    pretty, kinds, meta = _parse_tcp_options(tcp[20:data_off])
+    return SynInfo(
+        src_ip=src_ip,
+        src_port=src_port,
+        dst_ip=dst_ip,
+        dst_port=dst_port,
+        ttl=ttl,
+        tos=tos,
+        ip_id=ip_id,
+        ip_flags_df=ip_flags_df,
+        window=window,
+        seq=seq,
+        options=pretty,
+        option_kinds=kinds,
+        mss=meta["mss"],
+        wscale=meta["wscale"],
+        sack_permitted=meta["sack_permitted"],
+        tsval=meta["tsval"],
+        tsecr=meta["tsecr"],
+        captured_at=time.time(),
+    )
+
+
+def parse_ipv4_tcp_syn(frame: bytes, listen_port: int) -> SynInfo | None:
+    """从原始帧解析发往 listen_port 的纯 SYN。支持 Ethernet / 802.1Q / Linux SLL。"""
+    # Ethernet (+ optional VLAN)
+    if len(frame) >= 14:
+        ethertype = struct.unpack("!H", frame[12:14])[0]
+        ip_off = 14
+        if ethertype == 0x8100 and len(frame) >= 18:
+            ethertype = struct.unpack("!H", frame[16:18])[0]
+            ip_off = 18
+        if ethertype == 0x0800:
+            info = _parse_ip_tcp_syn_payload(frame[ip_off:], listen_port)
+            if info:
+                return info
+    # Linux cooked ("any") SLL
+    if len(frame) >= 16:
+        ethertype = struct.unpack("!H", frame[14:16])[0]
+        if ethertype == 0x0800:
+            return _parse_ip_tcp_syn_payload(frame[16:], listen_port)
+    return None
+
+class SynSniffer:
+    """Linux AF_PACKET 旁路抓 SYN，按 (src_ip, src_port) 缓存供 accept 关联。"""
+
+    def __init__(self, listen_port: int, max_entries: int = 4096, ttl_sec: float = 30.0):
+        self.listen_port = listen_port
+        self.max_entries = max_entries
+        self.ttl_sec = ttl_sec
+        self._cache: OrderedDict[tuple[str, int], SynInfo] = OrderedDict()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.enabled = False
+        self.error: str | None = None
+
+    def start(self) -> bool:
+        if not hasattr(socket, "AF_PACKET"):
+            self.error = "AF_PACKET unavailable (non-Linux?)"
+            return False
+        try:
+            # ETH_P_ALL = 0x0003
+            raw = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
+            raw.settimeout(1.0)
+        except PermissionError as e:
+            self.error = f"need CAP_NET_RAW/root: {e}"
+            return False
+        except OSError as e:
+            self.error = str(e)
+            return False
+
+        self.enabled = True
+        self._thread = threading.Thread(
+            target=self._loop, args=(raw,), name="syn-sniffer", daemon=True
+        )
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _loop(self, raw: socket.socket) -> None:
+        try:
+            while not self._stop.is_set():
+                try:
+                    frame = raw.recv(65535)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                info = parse_ipv4_tcp_syn(frame, self.listen_port)
+                if not info:
+                    continue
+                key = (info.src_ip, info.src_port)
+                with self._lock:
+                    self._cache[key] = info
+                    self._cache.move_to_end(key)
+                    while len(self._cache) > self.max_entries:
+                        self._cache.popitem(last=False)
+                    self._purge_locked()
+        finally:
+            try:
+                raw.close()
+            except OSError:
+                pass
+
+    def _purge_locked(self) -> None:
+        now = time.time()
+        dead = [k for k, v in self._cache.items() if now - v.captured_at > self.ttl_sec]
+        for k in dead:
+            del self._cache[k]
+
+    def pop(self, addr) -> SynInfo | None:
+        key = (addr[0], addr[1])
+        with self._lock:
+            self._purge_locked()
+            return self._cache.pop(key, None)
+
+    def get(self, addr) -> SynInfo | None:
+        key = (addr[0], addr[1])
+        with self._lock:
+            self._purge_locked()
+            return self._cache.get(key)
 
 
 class BioSSLConnection:
@@ -351,6 +595,7 @@ def handle_client(
     conn: socket.socket,
     addr,
     hello: ClientHelloInfo | None = None,
+    syn: SynInfo | None = None,
 ) -> None:
     try:
         raw = read_http_head(conn)
@@ -370,6 +615,28 @@ def handle_client(
         headers_str = "\r\n".join(lines_list)
 
         body = ""
+        if syn:
+            body += "tcp syn信息\n"
+            body += f"syn_from: {syn.src_ip}:{syn.src_port} -> {syn.dst_ip}:{syn.dst_port}\n"
+            body += f"ip_ttl: {syn.ttl}\n"
+            body += f"ip_tos: {syn.tos}\n"
+            body += f"ip_id: {syn.ip_id}\n"
+            body += f"ip_df: {syn.ip_flags_df}\n"
+            body += f"tcp_window: {syn.window}\n"
+            body += f"tcp_seq: {syn.seq}\n"
+            body += f"tcp_mss: {syn.mss}\n"
+            body += f"tcp_wscale: {syn.wscale}\n"
+            body += f"tcp_sack_permitted: {syn.sack_permitted}\n"
+            body += f"tcp_tsval: {syn.tsval}\n"
+            body += f"tcp_tsecr: {syn.tsecr}\n"
+            body += f"tcp_options: {syn.options}\n"
+            body += f"tcp_option_kinds: {syn.option_kinds}\n"
+            body += "\n\n"
+        elif CAPTURE_SYN:
+            body += "tcp syn信息\n"
+            body += "syn: (not captured; need Linux + CAP_NET_RAW/root, or race)\n"
+            body += "\n\n"
+
         if isinstance(conn, (ssl.SSLSocket, BioSSLConnection)):
             session = conn.session
             body += "tls信息 (协商后)\n"
@@ -412,7 +679,7 @@ def handle_client(
         body += "end:------------------------------\n"
         body = body.encode()
 
-        print(body.decode('utf-8'))
+        print(body.decode("utf-8"))
 
         resp = (
             b"HTTP/1.1 200 OK\r\n"
@@ -438,6 +705,14 @@ def main() -> None:
     ssl_ctx = make_ssl_context()
     scheme = "https" if ssl_ctx else "http"
 
+    syn_sniffer: SynSniffer | None = None
+    if CAPTURE_SYN:
+        syn_sniffer = SynSniffer(PORT)
+        if syn_sniffer.start():
+            print(f"SYN capture enabled on port {PORT} (AF_PACKET)")
+        else:
+            print(f"SYN capture disabled: {syn_sniffer.error}")
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((HOST, PORT))
@@ -448,6 +723,7 @@ def main() -> None:
 
         while True:
             conn, addr = server.accept()
+            syn = syn_sniffer.pop(addr) if syn_sniffer and syn_sniffer.enabled else None
             hello: ClientHelloInfo | None = None
             if ssl_ctx:
                 try:
@@ -471,10 +747,10 @@ def main() -> None:
                     print(f"socket error from {addr}: {e}")
                     try:
                         conn.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"socket error from {addr}: {e}")
                     continue
-            handle_client(conn, addr, hello)
+            handle_client(conn, addr, hello, syn)
 
 
 if __name__ == "__main__":
