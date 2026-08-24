@@ -179,24 +179,41 @@ def _parse_ip_tcp_syn_payload(ip: bytes, listen_port: int) -> SynInfo | None:
 
 
 def parse_ipv4_tcp_syn(frame: bytes, listen_port: int) -> SynInfo | None:
-    """从原始帧解析发往 listen_port 的纯 SYN。支持 Ethernet / 802.1Q / Linux SLL。"""
-    # Ethernet (+ optional VLAN)
+    """解析纯 SYN。支持 Ethernet/VLAN/PPPoE/SLL/裸 IPv4（OpenWrt 常见）。"""
+    payloads: list[bytes] = []
+
+    def _add_ip_from_ethertype(buf: bytes, off: int, ethertype: int) -> None:
+        if ethertype == 0x0800 and len(buf) > off:
+            payloads.append(buf[off:])
+        elif ethertype == 0x8864 and len(buf) >= off + 8:  # PPPoE
+            ppp = struct.unpack("!H", buf[off + 6 : off + 8])[0]
+            if ppp == 0x0021:  # IPv4
+                payloads.append(buf[off + 8 :])
+
+    # Ethernet (+ VLAN / PPPoE)
     if len(frame) >= 14:
         ethertype = struct.unpack("!H", frame[12:14])[0]
-        ip_off = 14
+        off = 14
         if ethertype == 0x8100 and len(frame) >= 18:
             ethertype = struct.unpack("!H", frame[16:18])[0]
-            ip_off = 18
-        if ethertype == 0x0800:
-            info = _parse_ip_tcp_syn_payload(frame[ip_off:], listen_port)
-            if info:
-                return info
-    # Linux cooked ("any") SLL
+            off = 18
+        _add_ip_from_ethertype(frame, off, ethertype)
+
+    # Linux SLL
     if len(frame) >= 16:
         ethertype = struct.unpack("!H", frame[14:16])[0]
-        if ethertype == 0x0800:
-            return _parse_ip_tcp_syn_payload(frame[16:], listen_port)
+        _add_ip_from_ethertype(frame, 16, ethertype)
+
+    # 裸 IPv4（PPP/部分隧道）
+    if frame and (frame[0] >> 4) == 4:
+        payloads.append(frame)
+
+    for ip in payloads:
+        info = _parse_ip_tcp_syn_payload(ip, listen_port)
+        if info:
+            return info
     return None
+
 
 class SynSniffer:
     """Linux AF_PACKET 旁路抓 SYN，按 (src_ip, src_port) 缓存供 accept 关联。"""
@@ -256,6 +273,10 @@ class SynSniffer:
                     while len(self._cache) > self.max_entries:
                         self._cache.popitem(last=False)
                     self._purge_locked()
+                print(
+                    f"SYN captured {info.src_ip}:{info.src_port} -> "
+                    f"{info.dst_ip}:{info.dst_port} ttl={info.ttl} win={info.window}"
+                )
         finally:
             try:
                 raw.close()
@@ -268,14 +289,20 @@ class SynSniffer:
         for k in dead:
             del self._cache[k]
 
-    def pop(self, addr) -> SynInfo | None:
-        key = (addr[0], addr[1])
-        with self._lock:
-            self._purge_locked()
-            return self._cache.pop(key, None)
+    def pop(self, addr, retries: int = 20, delay: float = 0.05) -> SynInfo | None:
+        key = (addr[0], int(addr[1]))
+        for i in range(max(1, retries)):
+            with self._lock:
+                self._purge_locked()
+                info = self._cache.pop(key, None)
+            if info:
+                return info
+            if i + 1 < retries:
+                time.sleep(delay)
+        return None
 
     def get(self, addr) -> SynInfo | None:
-        key = (addr[0], addr[1])
+        key = (addr[0], int(addr[1]))
         with self._lock:
             self._purge_locked()
             return self._cache.get(key)
@@ -635,7 +662,7 @@ def handle_client(
             body += "\n\n"
         elif CAPTURE_SYN:
             body += "tcp syn信息\n"
-            body += "syn: (not captured; need Linux + CAP_NET_RAW/root, or race)\n"
+            body += "syn: (not captured)\n"
             body += "\n\n"
 
         if isinstance(conn, (ssl.SSLSocket, BioSSLConnection)):
