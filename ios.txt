@@ -1,0 +1,81 @@
+SYN captured 220.196.193.48:36741 -> 223.166.157.95:58888 ttl=59 win=65535
+SYN captured 220.196.193.48:36741 -> 223.166.157.95:58888 ttl=59 win=65535
+ClientHello from ('220.196.193.48', 36741): sni=openwrt.hyl946.com ja3=ecdf4f49dd59effc439639da29186671
+tcp syn信息
+syn_from: 220.196.193.48:36741 -> 223.166.157.95:58888
+ip_ttl: 59
+ip_tos: 104
+ip_id: 0
+ip_df: True
+tcp_window: 65535
+tcp_seq: 1016414881
+tcp_mss: 1380
+tcp_wscale: 6
+tcp_sack_permitted: True
+tcp_tsval: 3336205616
+tcp_tsecr: 0
+tcp_options: ['MSS=1380', 'NOP', 'WS=6', 'NOP', 'NOP', 'TS=3336205616/0', 'SACK_PERM', 'EOL']
+tcp_option_kinds: [2, 1, 3, 1, 1, 8, 4, 0]
+
+
+tls信息 (协商后)
+tls_version: TLSv1.3
+tls_cipher: ('TLS_AES_256_GCM_SHA384', 'TLSv1.3', 256)
+tls_alpn: http/1.1
+tls_compression: None
+tls_session_reused: False
+tls_session_id: df8f5023298af7bdb5f0d61a6a0d7432290a39ef95be387488ffab6d479704e6
+tls_session_has_ticket: False
+tls_session_ticket_lifetime_hint: 0
+
+
+tls信息 (ClientHello)
+sni: openwrt.hyl946.com
+record_version: 0x0301
+client_version: 0x0303
+supported_versions: 0x7a7a(31354),0x0304(772),0x0303(771)
+cipher_suites: 0xdada(56026),0x1302(4866),0x1303(4867),0x1301(4865),0xc02c(49196),0xc02b(49195),0xcca9(52393),0xc030(49200),0xc02f(49199),0xcca8(52392),0xc00a(49162),0xc009(49161),0xc014(49172),0xc013(49171),0x009d(157),0x009c(156),0x0035(53),0x002f(47),0xc008(49160),0xc012(49170),0x000a(10)
+extensions: 0xfafa(64250),0x0000(0),0x0017(23),0xff01(65281),0x000a(10),0x000b(11),0x0010(16),0x0005(5),0x000d(13),0x0012(18),0x0033(51),0x002d(45),0x002b(43),0x001b(27),0x0a0a(2570)
+supported_groups: 0x8a8a(35466),0x11ec(4588),0x001d(29),0x0017(23),0x0018(24),0x0019(25)
+ec_point_formats: 0x0000(0)
+signature_algorithms: 0x0403(1027),0x0804(2052),0x0401(1025),0x0503(1283),0x0805(2053),0x0805(2053),0x0501(1281),0x0806(2054),0x0601(1537),0x0201(513)
+alpn_offered: ['h2', 'http/1.1']
+ja3: 771,4866-4867-4865-49196-49195-52393-49200-49199-52392-49162-49161-49172-49171-157-156-53-47-49160-49170-10,0-23-65281-10-11-16-5-13-18-51-45-43-27,4588-29-23-24-25,0
+ja3_hash: ecdf4f49dd59effc439639da29186671
+
+
+src_ip: 220.196.193.48:36741
+
+
+解析的请求头:
+start:------------------------------
+Host: openwrt.hyl946.com:58888
+Sec-Fetch-Dest: document
+User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5.2 Mobile/15E148 Safari/604.1
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Sec-Fetch-Site: none
+Sec-Fetch-Mode: navigate
+Accept-Language: zh-CN,zh-Hans;q=0.9
+Priority: u=0, i
+Accept-Encoding: gzip, deflate, br, zstd
+Connection: keep-alive
+end:------------------------------
+
+
+原始报文:
+start:------------------------------
+GET / HTTP/1.1
+Host: openwrt.hyl946.com:58888
+Sec-Fetch-Dest: document
+User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5.2 Mobile/15E148 Safari/604.1
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Sec-Fetch-Site: none
+Sec-Fetch-Mode: navigate
+Accept-Language: zh-CN,zh-Hans;q=0.9
+Priority: u=0, i
+Accept-Encoding: gzip, deflate, br, zstd
+Connection: keep-alive
+
+
+end:------------------------------
+

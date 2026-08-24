@@ -619,6 +619,50 @@ def _fmt_u16_list(vals: list[int]) -> str:
     return ",".join(f"0x{v:04x}({v})" for v in vals)
 
 
+def classify_os_from_syn(syn: SynInfo) -> tuple[str, float]:
+    """
+    根据 TCP SYN 指纹粗分 iOS / Android。
+    返回 (标签, ios_score)，ios_score 为偏向 iOS 的概率约 0.0~1.0。
+    """
+    kinds = [k for k in syn.option_kinds if k != 0]
+    score = 0.5  # 先验未知
+
+    # option 顺序权重最大
+    if len(kinds) >= 3 and kinds[0] == 2 and kinds[1] == 1 and kinds[2] == 3:
+        # MSS, NOP, WS ... 典型 Apple/BSD
+        score += 0.35
+        if 8 in kinds and 4 in kinds and kinds.index(8) < kinds.index(4):
+            score += 0.10
+    elif len(kinds) >= 3 and kinds[0] == 2 and kinds[1] == 4 and kinds[2] == 8:
+        # MSS, SACK, TS ... 典型 Linux/Android
+        score -= 0.40
+
+    # 辅助信号
+    if syn.ip_id == 0:
+        score += 0.08
+    if syn.wscale is not None:
+        if syn.wscale == 6:
+            score += 0.05
+        elif syn.wscale >= 8:
+            score -= 0.05
+    # 选项里 NOP 较多更像 BSD 填充
+    nop_count = sum(1 for k in kinds if k == 1)
+    if nop_count >= 2:
+        score += 0.04
+    elif nop_count == 0 and kinds[:3] == [2, 4, 8]:
+        score -= 0.03
+
+    score = max(0.0, min(1.0, score))
+
+    if score >= 0.70:
+        label = "ios"
+    elif score <= 0.30:
+        label = "android"
+    else:
+        label = "unknown"
+    return label, round(score, 3)
+
+
 def handle_client(
     conn: socket.socket,
     addr,
@@ -659,6 +703,9 @@ def handle_client(
             body += f"tcp_tsecr: {syn.tsecr}\n"
             body += f"tcp_options: {syn.options}\n"
             body += f"tcp_option_kinds: {syn.option_kinds}\n"
+            os_label, ios_score = classify_os_from_syn(syn)
+            body += f"os_guess: {os_label}\n"
+            body += f"ios_score: {ios_score}\n"
             body += "\n\n"
         elif CAPTURE_SYN:
             body += "tcp syn信息\n"
