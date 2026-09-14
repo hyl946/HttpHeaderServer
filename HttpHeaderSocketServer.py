@@ -289,7 +289,7 @@ class SynSniffer:
         for k in dead:
             del self._cache[k]
 
-    def pop(self, addr, retries: int = 20, delay: float = 0.05) -> SynInfo | None:
+    def pop(self, addr, retries: int = 5, delay: float = 0.02) -> SynInfo | None:
         key = (addr[0], int(addr[1]))
         for i in range(max(1, retries)):
             with self._lock:
@@ -804,11 +804,14 @@ def main() -> None:
         readable, _, _ = select.select(servers, [], [])
         for server in readable:
             conn, addr = server.accept()
-            syn = syn_sniffer.pop(addr) if syn_sniffer and syn_sniffer.enabled else None
+            try:
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
             hello: ClientHelloInfo | None = None
             if ssl_ctx:
                 try:
-                    # 握手前先读 ClientHello，解析 SNI/JA3，再经 MemoryBIO 喂给 OpenSSL
+                    # 先完成 TLS 握手，再关联 SYN，避免 pop 重试拖慢 ServerHello
                     prefix = read_client_hello_record(conn)
                     hello = parse_client_hello(prefix)
                     if hello:
@@ -831,6 +834,7 @@ def main() -> None:
                     except Exception as e:
                         print(f"socket error from {addr}: {e}")
                     continue
+            syn = syn_sniffer.pop(addr) if syn_sniffer and syn_sniffer.enabled else None
             handle_client(conn, addr, hello, syn)
 
 
