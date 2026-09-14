@@ -1,0 +1,20 @@
+HttpHeaderSocketServer.py
+  s_b2f5f916fd4a4c::t_64157a8caa9d4c 850-870
+  s_b2f5f916fd4a4c::t_285169af4270a6 554,577-608
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.44-trip",
+  "base_commit_sha": "b38125b3b132591c5af5b45762df9c74cefbf5cd",
+  "prompts": {},
+  "sessions": {
+    "s_b2f5f916fd4a4c": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "602b8f2a-4b69-4838-9ba4-12221e26407e",
+        "model": "default"
+      },
+      "human_author": "yl.han <yl.han@trip.com>"
+    }
+  }
+}
