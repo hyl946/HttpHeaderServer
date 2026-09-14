@@ -551,7 +551,7 @@ def _fill_ja3(info: ClientHelloInfo) -> None:
 
 
 def read_client_hello_record(sock: socket.socket, timeout: float = 10.0) -> bytes:
-    """读完整的第一条 TLS handshake record（通常即 ClientHello）。"""
+    """读完整的第一条 TLS handshake record（通常即 ClientHello）。会消费套接字数据。"""
     old = sock.gettimeout()
     sock.settimeout(timeout)
     try:
@@ -570,6 +570,42 @@ def read_client_hello_record(sock: socket.socket, timeout: float = 10.0) -> byte
                 break
             buf += chunk
         return buf
+    finally:
+        sock.settimeout(old)
+
+
+def peek_client_hello_record(sock: socket.socket, timeout: float = 10.0) -> bytes:
+    """
+    用 MSG_PEEK 窥探完整 ClientHello，不从内核缓冲中消费。
+    随后可用 wrap_socket 让 OpenSSL 自己读同一份数据（比 MemoryBIO 更稳）。
+    """
+    import select
+
+    old = sock.gettimeout()
+    deadline = time.time() + timeout
+    try:
+        sock.settimeout(max(0.1, timeout))
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                data = sock.recv(65535, socket.MSG_PEEK)
+            except (BlockingIOError, InterruptedError):
+                data = b""
+            except OSError:
+                # 部分环境不支持 MSG_PEEK 语义时退化为空，由调用方回退
+                return b""
+            if len(data) >= 5:
+                need = 5 + _u16(data, 3)
+                if len(data) >= need:
+                    return data[:need]
+            select.select([sock], [], [], min(remaining, 0.5))
+        try:
+            data = sock.recv(65535, socket.MSG_PEEK)
+            return data if data else b""
+        except OSError:
+            return b""
     finally:
         sock.settimeout(old)
 
@@ -811,15 +847,27 @@ def main() -> None:
             hello: ClientHelloInfo | None = None
             if ssl_ctx:
                 try:
-                    # 先完成 TLS 握手，再关联 SYN，避免 pop 重试拖慢 ServerHello
-                    prefix = read_client_hello_record(conn)
-                    hello = parse_client_hello(prefix)
-                    if hello:
-                        print(
-                            f"ClientHello from {addr}: sni={hello.sni} "
-                            f"ja3={hello.ja3_hash}"
-                        )
-                    conn = BioSSLConnection(conn, ssl_ctx, prefix)
+                    # 窥探 ClientHello（不消费），再 wrap_socket 由 OpenSSL 直接读 fd
+                    prefix = peek_client_hello_record(conn)
+                    if not prefix or len(prefix) < 5:
+                        # 回退：消费读取 + MemoryBIO
+                        prefix = read_client_hello_record(conn)
+                        hello = parse_client_hello(prefix)
+                        if hello:
+                            print(
+                                f"ClientHello from {addr}: sni={hello.sni} "
+                                f"ja3={hello.ja3_hash}"
+                            )
+                        conn = BioSSLConnection(conn, ssl_ctx, prefix)
+                    else:
+                        hello = parse_client_hello(prefix)
+                        if hello:
+                            print(
+                                f"ClientHello from {addr}: sni={hello.sni} "
+                                f"ja3={hello.ja3_hash}"
+                            )
+                        conn.settimeout(30)
+                        conn = ssl_ctx.wrap_socket(conn, server_side=True)
                 except ssl.SSLError as e:
                     print(f"tls handshake failed from {addr}: {e}")
                     try:
